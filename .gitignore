@@ -1,1 +1,3 @@
 data/
+src/test/.ipynb_checkpoints/
+src/test/__pycache__/
