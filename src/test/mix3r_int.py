@@ -3,7 +3,7 @@ import numba as nb
 import pandas as pd
 from numba import cuda
 import math
-from scipy.optimize import minimize, direct
+from scipy.optimize import minimize, direct, minimize_scalar
 from datetime import datetime
 import os
 import sys
@@ -333,8 +333,6 @@ def log_pdf_1d(res_vec, z0_vec, p, sb2, s02, n_vec, r2_het_hist, nbin_r2_het_his
         pdf = HALF_f4*h*res / PI_f4
         res_vec[tid] = -math.log(max(pdf, min_pdf))
 
-
-        
 #@cuda.jit(device=True, inline=True)
 @nb.njit(fastmath=True)
 def ch_func_2d(x, y, p_1, p_2, sb2_1, sb2_2, s02_1, s02_2, pp, rho, rho0, n_1, n_2, r2_het_hist):
@@ -374,7 +372,8 @@ def log_pdf_2d(res_vec, z0_1_vec, z0_2_vec, p_1, p_2, sb2_1, sb2_2, s02_1, s02_2
         while ch_fx_max > tol:
             ch_fx_max = tol
             # go up y axis from y = y_ch_fx_max
-            y = y_ch_fx_max
+            y_start = y_ch_fx_max
+            y = y_start
             res = ZERO_f4 # accumulates sum of integrated func over y for a fixed x.
             ch_fx = tol + ONE_f4 # arbitrary value > tol
             while ch_fx > tol:
@@ -385,8 +384,8 @@ def log_pdf_2d(res_vec, z0_1_vec, z0_2_vec, p_1, p_2, sb2_1, sb2_2, s02_1, s02_2
                     y_ch_fx_max = y
                 res += math.cos(z0_1*x + z0_2*y)*ch_fx
                 y += h
-            # go down y axis from y = y_ch_fx_max - h
-            y = y_ch_fx_max - h
+            # go down y axis from y = y_start - h
+            y = y_start - h
             ch_fx = tol + ONE_f4 # arbitrary value > tol
             while ch_fx > tol:
                 ch_fx = ch_func_2d(x, y, p_1, p_2, sb2_1, sb2_2, s02_1, s02_2, pp, rho, rho0,
@@ -400,6 +399,162 @@ def log_pdf_2d(res_vec, z0_1_vec, z0_2_vec, p_1, p_2, sb2_1, sb2_2, s02_1, s02_2
             x += h
             factor = TWO_f4*TWO_f4
         pdf *= HALF_f4*h*h / (TWO_f4*PI_f4)**TWO_f4
+        res_vec[tid] = -math.log(max(pdf, min_pdf))
+
+
+@nb.njit(fastmath=True)
+def ch_func_3d(x, y, z, n_1, n_2, n_3,
+               p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3,
+               p_12, p_13, p_23, rho_12, rho_13, rho_23, rho0_12, rho0_13, rho0_23,
+               p_123, r2_het_hist):
+    nbin_r2_het_hist = r2_het_hist.shape[0]
+    nbin_r2_het_hist_inverse = nb.float32(1/nbin_r2_het_hist)
+    p_12_only = p_12 - p_123 
+    p_13_only = p_13 - p_123 
+    p_23_only = p_23 - p_123
+    p_1_only = p_1 - p_12_only - p_13_only - p_123
+    p_2_only = p_2 - p_12_only - p_23_only - p_123
+    p_3_only = p_3 - p_13_only - p_23_only - p_123
+    p_null = ONE_f4 - p_123 - p_12_only - p_13_only - p_23_only - p_1_only - p_2_only - p_3_only
+    fx = math.exp(-HALF_f4*(s02_1*x*x + s02_2*y*y + s02_3*z*z + rho0_12*math.sqrt(s02_1*s02_2)*x*y + rho0_13*math.sqrt(s02_1*s02_3)*x*z + rho0_23*math.sqrt(s02_2*s02_3)*y*z))
+    for i in range(nbin_r2_het_hist):
+        n_in_bin = r2_het_hist[i]
+        if n_in_bin != 0:
+            rh = (HALF_f4*nb.float32(i) + QUARTER_f4)*nbin_r2_het_hist_inverse
+            se2_1 = n_1*sb2_1*rh
+            se2_2 = n_2*sb2_2*rh
+            se2_3 = n_3*sb2_3*rh
+            cxx = se2_1*x*x
+            cyy = se2_2*y*y
+            czz = se2_3*z*z
+            cxy = TWO_f4*rho_12*math.sqrt(sb2_1*sb2_2)*x*y
+            cxz = TWO_f4*rho_13*math.sqrt(sb2_1*sb2_3)*x*z
+            cyz = TWO_f4*rho_23*math.sqrt(sb2_2*sb2_3)*y*z
+            fx *= ( p_null +
+                    p_1_only*math.exp(-HALF_f4*cxx) + 
+                    p_2_only*math.exp(-HALF_f4*cyy) +
+                    p_3_only*math.exp(-HALF_f4*czz) +
+                    p_12_only*math.exp(-HALF_f4*(cxx + cxy + cyy)) +
+                    p_13_only*math.exp(-HALF_f4*(cxx + cxz + czz)) +
+                    p_23_only*math.exp(-HALF_f4*(cyy + cyz + czz)) +
+                    p_123*math.exp(-HALF_f4*(cxx + cyy + czz + cxy + cxz + cyz))
+                  )**n_in_bin
+    return fx
+
+@cuda.jit(fastmath=False)
+def log_pdf_3d(res_vec, z0_1_vec, z0_2_vec, z0_3_vec, n_1_vec, n_2_vec, n_3_vec,
+               p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3, p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23,
+               p_123, r2_het_hist, nbin_r2_het_hist):
+    tid = cuda.grid(1)
+    if tid < len(res_vec):
+        h = nb.float32(1E-1) # define grid
+        min_pdf = nb.float32(1E-43)
+        tol = nb.float32(1E-8)
+        z0_1, z0_2, z0_3 = z0_1_vec[tid], z0_2_vec[tid], z0_3_vec[tid]
+        n_1, n_2, n_3 = n_1_vec[tid], n_2_vec[tid], n_3_vec[tid]
+        r2_het_hist_tid = r2_het_hist[tid*nbin_r2_het_hist:(tid+1)*nbin_r2_het_hist]
+        ch_func_args = (n_1, n_2, n_3, p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3, p_12, p_13, p_23, rho_12, rho_13, rho_23, rho0_12, rho0_13, rho0_23, p_123, r2_het_hist_tid)
+
+        pdf = ZERO_f4
+        x = ZERO_f4 # start from x == 0 and go up x axis
+        factor = TWO_f4*TWO_f4 # factor = 4 if x == 0 else 8
+        fx_max_yz_prev = tol + ONE_f4 
+        y_max_yz_prev = ZERO_f4
+        z_max_yz_prev = ZERO_f4
+        while fx_max_yz_prev > tol:
+            fx_max_yz_cur = ZERO_f4
+            y_max_yz_cur = ZERO_f4
+            z_max_yz_cur = ZERO_f4
+            res = ZERO_f4 # accumulates sum of integrated func over y for a fixed x.
+            y_start = y_max_yz_prev
+            fx_max_z_prev = ONE_f4 + tol
+            z_max_z_prev = z_max_yz_prev
+            # go up y
+            y = y_start
+            while fx_max_z_prev > tol:
+                fx_max_z_cur = 0
+                z_max_z_cur = 0
+
+                z_start = z_max_z_prev
+                z = z_start
+                fx = ONE_f4 + tol
+                # go up z
+                while fx > tol:
+                    fx = ch_func_3d(x, y, z, *ch_func_args)
+                    res += math.cos(z0_1*x + z0_2*y + z0_3*z)*fx
+                    if fx > fx_max_z_cur:
+                        fx_max_z_cur = fx
+                        z_max_z_cur = z
+                    z += h
+                # go down z
+                z = z_start - h
+                fx = tol + ONE_f4 # arbitrary value > tol
+                while fx > tol:
+                    fx = ch_func_3d(x, y, z, *ch_func_args)
+                    res += math.cos(z0_1*x + z0_2*y + z0_3*z)*fx
+                    if fx > fx_max_z_cur:
+                        fx_max_z_cur = fx
+                        z_max_z_cur = z
+                    z -= h
+
+                fx_max_z_prev = fx_max_z_cur
+                z_max_z_prev = z_max_z_cur
+
+                if fx_max_z_cur > fx_max_yz_cur:
+                    fx_max_yz_cur = fx_max_z_cur
+                    y_max_yz_cur = y
+                    z_max_yz_cur = z_max_z_cur
+
+                y += h
+            # go down y
+            fx_max_z_prev = ONE_f4 + tol
+            z_max_z_prev = z_max_yz_prev
+            y = y_start - h
+            while fx_max_z_prev > tol:
+                fx_max_z_cur = ZERO_f4
+                z_max_z_cur = ZERO_f4
+
+                z_start = z_max_z_prev
+                z = z_start
+                fx = ONE_f4 + tol
+                # go up z
+                while fx > tol:
+                    fx = ch_func_3d(x, y, z, *ch_func_args)
+                    res += math.cos(z0_1*x + z0_2*y + z0_3*z)*fx
+                    if fx > fx_max_z_cur:
+                        fx_max_z_cur = fx
+                        z_max_z_cur = z
+                    z += h
+                z = z_start - h
+                fx = ONE_f4 + tol
+                # go down z
+                while fx > tol:
+                    fx = ch_func_3d(x, y, z, *ch_func_args)
+                    res += math.cos(z0_1*x + z0_2*y + z0_3*z)*fx
+                    if fx > fx_max_z_cur:
+                        fx_max_z_cur = fx
+                        z_max_z_cur = z
+                    z -= h
+
+                fx_max_z_prev = fx_max_z_cur
+                z_max_z_prev = z_max_z_cur
+
+                if fx_max_z_cur > fx_max_yz_cur:
+                    fx_max_yz_cur = fx_max_z_cur
+                    y_max_yz_cur = y
+                    z_max_yz_cur = z_max_z_cur
+
+                y -= h
+
+            fx_max_yz_prev = fx_max_yz_cur
+            y_max_yz_prev = y_max_yz_cur
+            z_max_yz_prev = z_max_yz_cur
+            x += h
+            pdf += factor*res
+            factor = TWO_f4*TWO_f4*TWO_f4
+        
+        # integral in the x > 0 half-space is equal to the integral in x < 0 subspace
+        pdf *= QUARTER_f4*h*h*h / (TWO_f4*PI_f4)**(TWO_f4 + ONE_f4)
         res_vec[tid] = -math.log(max(pdf, min_pdf))
 
 
@@ -438,6 +593,31 @@ def cost_2d_gpu(z0_1_vec, z0_2_vec, p_1, p_2, sb2_1, sb2_2, s02_1, s02_2, pp, rh
     cost = sum_reduce(log_pdf_vec_gpu)
     return cost
 
+def cost_3d_gpu(z0_1_vec, z0_2_vec, z0_3_vec, n_1_vec, n_2_vec, n_3_vec,
+                p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3,
+                p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23,
+                p_123, r2_het_hist, nbin_r2_het_hist):
+    p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3, p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23, p_123 = map(nb.float32,
+                                                                                                                                               (p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3,
+                                                                                                                                                p_12, p_13, p_23, rho_12, rho_13, rho_23,
+                                                                                                                                                rho0_12, rho0_13, rho0_23, p_123))
+    log_pdf_vec_gpu = cuda.device_array_like(z0_1_vec)
+    
+    r2_het_hist_gpu = cuda.to_device(r2_het_hist)
+    z0_1_vec_gpu = cuda.to_device(z0_1_vec)
+    z0_2_vec_gpu = cuda.to_device(z0_2_vec)
+    z0_3_vec_gpu = cuda.to_device(z0_3_vec)
+    n_1_vec_gpu = cuda.to_device(n_1_vec)
+    n_2_vec_gpu = cuda.to_device(n_2_vec)
+    n_3_vec_gpu = cuda.to_device(n_3_vec)
+    
+    log_pdf_3d.forall(len(z0_1_vec))(log_pdf_vec_gpu,
+                                     z0_1_vec_gpu, z0_2_vec_gpu, z0_3_vec_gpu, n_1_vec_gpu, n_2_vec_gpu, n_3_vec_gpu,
+                                     p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3, p_12, p_13, p_23, rho_12, rho_13, rho_23, rho0_12, rho0_13, rho0_23,
+                                     p_123, r2_het_hist_gpu, nbin_r2_het_hist)
+    cost = sum_reduce(log_pdf_vec_gpu)
+    return cost
+
 
 def obj_func_1d(par_vec, z0_vec, n_vec, r2_het_hist, nbin_r2_het_hist):
     p, sb2, s02 = par_vec
@@ -463,7 +643,7 @@ def optimize_1d(z0_vec, n_vec, r2_het_hist, nbin_r2_het_hist,
         args_opt_global = (z0_vec_global, n_vec_global, r2_het_hist_global, nbin_r2_het_hist)
         
     print(">>> Starting global optimization. ------------------------------------------------------")
-    res = direct(obj_func_1d, bounds, args=args_opt_global, maxfun=3200, locally_biased=True)
+    res = direct(obj_func_1d, bounds, args=args_opt_global, maxfun=6400, locally_biased=True)
     
     print(">>> Starting local optimization. -------------------------------------------------------")
     x0 = res.x
@@ -481,13 +661,10 @@ def obj_func_2d(par_vec, z0_1_vec, z0_2_vec, n_1_vec, n_2_vec, p_1, p_2, sb2_1, 
     pp, rho, rho0 = par_vec
     pp = 10**pp
     
-    #cost = cost_2d_gpu(z0_1_vec, z0_2_vec, p_1, p_2, sb2_1, sb2_2, s02_1, s02_2, pp, rho, rho0, n_1_vec, n_2_vec,
-    #        r2_het_hist, nbin_r2_het_hist)
     cost = cost_2d_gpu(z0_1_vec, z0_2_vec, p_1, p_2, sb2_1, sb2_2, s02_1, s02_2, pp, rho, rho0, n_1_vec, n_2_vec,
             r2_het_hist, nbin_r2_het_hist)
     print(f"cost = {cost:.7f}, p12 = {pp:.7e}, rho = {rho:.7f}, rho0 = {rho0:.7f}", flush=True)
     return cost
-
 
 def optimize_2d(p_1, sb2_1, s02_1, n_1_vec, z0_1_vec, p_2, sb2_2, s02_2, n_2_vec,
                 z0_2_vec, r2_het_hist, nbin_r2_het_hist,
@@ -508,7 +685,7 @@ def optimize_2d(p_1, sb2_1, s02_1, n_1_vec, z0_1_vec, p_2, sb2_2, s02_2, n_2_vec
                            sb2_1, sb2_2, s02_1, s02_2, r2_het_hist_global, nbin_r2_het_hist)
     
     print(">>> Starting global optimization. ------------------------------------------------------")
-    res = direct(obj_func_2d, bounds, args=args_opt_global, maxfun=3200, locally_biased=True)
+    res = direct(obj_func_2d, bounds, args=args_opt_global, maxfun=6400, locally_biased=True)
     
     print(">>> Starting local optimization. -------------------------------------------------------")
     x0 = res.x
@@ -522,6 +699,46 @@ def optimize_2d(p_1, sb2_1, s02_1, n_1_vec, z0_1_vec, p_2, sb2_2, s02_2, n_2_vec
     opt_out = dict(opt_res=opt_res, opt_par=opt_par)
     return opt_out
 
+def obj_func_3d(p_123, z0_1_vec, z0_2_vec, z0_3_vec, n_1_vec, n_2_vec, n_3_vec,
+                p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3,
+                p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23,
+                r2_het_hist, nbin_het_hist):
+    p_123 = 10**p_123
+    
+    cost = cost_3d_gpu(z0_1_vec, z0_2_vec, z0_3_vec, n_1_vec, n_2_vec, n_3_vec,
+                       p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3,
+                       p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23,
+                       p_123, r2_het_hist, nbin_het_hist)
+
+    print(f"cost = {cost:.7f}, p123 = {p_123:.7e}", flush=True)
+    return cost
+
+def optimize_3d(z0_1_vec, z0_2_vec, z0_3_vec, n_1_vec, n_2_vec, n_3_vec,
+                p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3,
+                p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23,
+                r2_het_hist, nbin_het_hist):
+    p_123_lb, p_123_rb = math.log10(max(5E-6, p_12+p_13-p_1, p_12+p_23-p_2, p_13+p_23-p_3)), math.log10(min(p_12, p_13, p_23)) # on log10 scale
+    print(10**p_123_lb, 10**p_123_rb)
+    if p_123_lb >= p_123_rb:
+        print("Trivariate optimization is skipped")
+        opt_par = [10**p_123_rb]
+        opt_res = {"x":[p_123_rb], "fun":[None] ,"success":False, "status":1,
+                   "message":"Trivariate optimization is skipped",
+                   "nfev":0, "nit":0}
+    else:
+        print(">>> Starting global optimization. -------------------------------------------------------")
+        args_opt = (z0_1_vec, z0_2_vec, z0_3_vec, n_1_vec, n_2_vec, n_3_vec,
+                    p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3,
+                    p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23,
+                    r2_het_hist, nbin_het_hist)
+        res = minimize_scalar(obj_func_3d, args=args_opt, method='bounded',
+                              bounds=(p_123_lb, p_123_rb), options={'maxiter':30, 'xatol':1E-4})
+        opt_par = [10**res.x]
+        opt_res = dict(x=res.x.tolist(), fun=res.fun.tolist())
+        for k in ("success", "status", "message", "nfev", "nit"):
+            opt_res[k] = res.get(k)
+    opt_out = dict(opt_res=opt_res, opt_par=opt_par)
+    return opt_out
 
 if __name__ == "__main__":
     args = parse_args(sys.argv[1:])
@@ -537,7 +754,7 @@ if __name__ == "__main__":
             maf_thresh=config["snp_filters"]["maf_thresh"],
             exclude_regions=config["snp_filters"]["exclude_regions"])
 
-    snps2keep = select_snps(snps_df, snps2keep=None, n_random=3200000, do_pruning=False,
+    snps2keep = select_snps(snps_df, snps2keep=None, n_random=None, do_pruning=False,
                         r2_prune_thresh=config["pruning"]["r2_prune_thresh"],
                         template_dir=config["template_dir"],
                         rng_seed=config["pruning"]["rand_prune_seed"])
@@ -546,7 +763,7 @@ if __name__ == "__main__":
                                       snps2keep=snps2keep, nbin_het_hist=nbin_het_hist)
 
     rng = np.random.default_rng(seed=config["pruning"]["rand_prune_seed"])
-    snps2keep_global = rng.choice(snps2keep, 1600000, replace=False)
+    snps2keep_global = rng.choice(snps2keep, len(snps2keep), replace=False)
     r2_het_hist_global, z_n_dict_global = load_opt_data(config["template_dir"], snps_df,
                                                         snps2keep=snps2keep_global, nbin_het_hist=nbin_het_hist)
 
@@ -636,5 +853,26 @@ if __name__ == "__main__":
     print("End Time =", end_time)
     print("Bivariate result 2 vs 3:")
     print(opt_out_23)
+
+
+    p_1, sb2_1, s02_1 = opt_out_1['opt_par']
+    p_2, sb2_2, s02_2 = opt_out_2['opt_par']
+    p_3, sb2_3, s02_3 = opt_out_3['opt_par']
+    p_12, rho_12, rho0_12 = opt_out_12['opt_par']
+    p_13, rho_13, rho0_13 = opt_out_13['opt_par']
+    p_23, rho_23, rho0_23 = opt_out_23['opt_par']
+    now = datetime.now()
+    start_time = now.strftime("%D-%H:%M:%S")
+    opt_out_123 = optimize_3d(z_n_dict["Z_0"], z_n_dict["Z_1"], z_n_dict["Z_2"],
+                              z_n_dict["N_0"], z_n_dict["N_1"], z_n_dict["N_2"],
+                              p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3,
+                              p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23,
+                              r2_het_hist, nbin_het_hist)
+    now = datetime.now()
+    end_time = now.strftime("%D-%H:%M:%S")
+    print("Start Time =", start_time)
+    print("End Time =", end_time)
+    print("Trivariate result 1 vs 2 vs 3:")
+    print(opt_out_123)    
 
     print("Done!")

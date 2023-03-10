@@ -1,0 +1,35 @@
+{
+    "sumstats": [
+        "/cluster/work/projects/ec42/users/alexeas/mix3r/data/sumstats/PGC_SCZ_0518_EUR.sumstats.gz",
+        "/cluster/work/projects/ec42/users/alexeas/mix3r/data/sumstats/PGC_BIP_2019_wave3.sumstats.gz",
+        "/cluster/work/projects/ec42/users/alexeas/mix3r/data/sumstats/ENIGMA_TH_2020_noGC.sumstats.gz"
+    ],
+
+    "template_dir": "/cluster/work/projects/ec42/users/alexeas/mix3r/data/template/ukb",
+
+    "out": "/cluster/work/projects/ec42/users/alexeas/mix3r/out/test.scz_sa_ibd_fox_1.json",
+
+    "snp_filters": {
+        "chromosomes": [20,22],
+        "maf_thresh": 0.05,
+        "info_thresh": 0.9,
+        "z_thresh": 32,
+        "exclude_regions": ["6:25000000-33000000", "8:7200000-12500000", "17:40000000-47000000", "19:42000000-47000000"]
+    },
+
+    "pruning": {
+        "r2_prune_thresh": 0.36,
+        "rand_prune_seed": 12345
+    },
+
+    "optimization": {
+        "n_samples_grid_1x": 16382,
+        "n_samples_local_1x": 65536,
+        "n_samples_grid_2x": 32768,
+        "n_samples_local_2x": 262144,
+        "n_samples_grid_3x": 2097152,
+        "n_samples_local_3x": 2097152,
+        "gpu_rng_seed": 54321
+    }
+}
+
