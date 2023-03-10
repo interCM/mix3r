@@ -629,7 +629,8 @@ def obj_func_1d(par_vec, z0_vec, n_vec, r2_het_hist, nbin_r2_het_hist):
 
 
 def optimize_1d(z0_vec, n_vec, r2_het_hist, nbin_r2_het_hist,
-                z0_vec_global=None, n_vec_global=None, r2_het_hist_global=None):
+                z0_vec_global=None, n_vec_global=None, r2_het_hist_global=None,
+                maxiter_1d_glob=3200, maxiter_1d_loc=100):
     p_lb, p_rb = -6, -2 # on log10 scale
     sb2_lb, sb2_rb = -7, -3 # on log10 scale
     s02_lb, s02_rb = 0.8, 2.5
@@ -643,12 +644,12 @@ def optimize_1d(z0_vec, n_vec, r2_het_hist, nbin_r2_het_hist,
         args_opt_global = (z0_vec_global, n_vec_global, r2_het_hist_global, nbin_r2_het_hist)
         
     print(">>> Starting global optimization. ------------------------------------------------------")
-    res = direct(obj_func_1d, bounds, args=args_opt_global, maxfun=6400, locally_biased=True)
+    res = direct(obj_func_1d, bounds, args=args_opt_global, maxfun=maxiter_1d_glob, locally_biased=True)
     
     print(">>> Starting local optimization. -------------------------------------------------------")
     x0 = res.x
     res = minimize(obj_func_1d, x0=x0, args=args_opt, method='Nelder-Mead', bounds=bounds,
-            options={'maxfev':100, 'fatol':10, 'xatol':1E-3, 'adaptive':True})
+            options={'maxfev':maxiter_1d_loc, 'fatol':10, 'xatol':1E-3, 'adaptive':True})
     
     opt_par = [10**res.x[0], 10**res.x[1], res.x[2]]
     opt_res = dict(x=res.x.tolist(), fun=res.fun.tolist())
@@ -669,7 +670,7 @@ def obj_func_2d(par_vec, z0_1_vec, z0_2_vec, n_1_vec, n_2_vec, p_1, p_2, sb2_1, 
 def optimize_2d(p_1, sb2_1, s02_1, n_1_vec, z0_1_vec, p_2, sb2_2, s02_2, n_2_vec,
                 z0_2_vec, r2_het_hist, nbin_r2_het_hist,
                 z0_1_vec_global=None, n_1_vec_global=None, z0_2_vec_global=None, n_2_vec_global=None,
-                r2_het_hist_global=None):
+                r2_het_hist_global=None, maxiter_2d_glob=3200, maxiter_2d_loc=100):
     p12_lb, p12_rb = -6, np.log10(min(p_1,p_2)) # on log10 scale
     assert p12_lb < p12_rb
     rho_lb, rho_rb = -1, 1
@@ -685,12 +686,12 @@ def optimize_2d(p_1, sb2_1, s02_1, n_1_vec, z0_1_vec, p_2, sb2_2, s02_2, n_2_vec
                            sb2_1, sb2_2, s02_1, s02_2, r2_het_hist_global, nbin_r2_het_hist)
     
     print(">>> Starting global optimization. ------------------------------------------------------")
-    res = direct(obj_func_2d, bounds, args=args_opt_global, maxfun=6400, locally_biased=True)
+    res = direct(obj_func_2d, bounds, args=args_opt_global, maxfun=maxiter_2d_glob, locally_biased=True)
     
     print(">>> Starting local optimization. -------------------------------------------------------")
     x0 = res.x
     res = minimize(obj_func_2d, x0=x0, args=args_opt, method='Nelder-Mead', bounds=bounds,
-            options={'maxfev':100, 'fatol':10, 'xatol':1E-3, 'adaptive':True})
+            options={'maxfev':maxiter_2d_loc, 'fatol':10, 'xatol':1E-3, 'adaptive':True})
     
     opt_par = [10**res.x[0], res.x[1], res.x[2]]
     opt_res = dict(x=res.x.tolist(), fun=res.fun.tolist())
@@ -716,7 +717,7 @@ def obj_func_3d(p_123, z0_1_vec, z0_2_vec, z0_3_vec, n_1_vec, n_2_vec, n_3_vec,
 def optimize_3d(z0_1_vec, z0_2_vec, z0_3_vec, n_1_vec, n_2_vec, n_3_vec,
                 p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3,
                 p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23,
-                r2_het_hist, nbin_het_hist):
+                r2_het_hist, nbin_het_hist, maxiter):
     p_123_lb, p_123_rb = math.log10(max(5E-6, p_12+p_13-p_1, p_12+p_23-p_2, p_13+p_23-p_3)), math.log10(min(p_12, p_13, p_23)) # on log10 scale
     print(10**p_123_lb, 10**p_123_rb)
     if p_123_lb >= p_123_rb:
@@ -732,7 +733,7 @@ def optimize_3d(z0_1_vec, z0_2_vec, z0_3_vec, n_1_vec, n_2_vec, n_3_vec,
                     p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23,
                     r2_het_hist, nbin_het_hist)
         res = minimize_scalar(obj_func_3d, args=args_opt, method='bounded',
-                              bounds=(p_123_lb, p_123_rb), options={'maxiter':30, 'xatol':1E-4})
+                              bounds=(p_123_lb, p_123_rb), options={'maxiter':maxiter, 'xatol':1E-4})
         opt_par = [10**res.x]
         opt_res = dict(x=res.x.tolist(), fun=res.fun.tolist())
         for k in ("success", "status", "message", "nfev", "nit"):
@@ -771,7 +772,9 @@ if __name__ == "__main__":
     now = datetime.now()
     start_time = now.strftime("%D-%H:%M:%S")
     opt_out_1 = optimize_1d(z_n_dict["Z_0"], z_n_dict["N_0"], r2_het_hist, nbin_het_hist,
-                           z_n_dict_global["Z_0"], z_n_dict_global["N_0"], r2_het_hist_global)
+                           z_n_dict_global["Z_0"], z_n_dict_global["N_0"], r2_het_hist_global,
+                            maxiter_1d_glob=config["optimization"]["maxiter_1d_glob"],
+                            maxiter_1d_loc=config["optimization"]["maxiter_1d_loc"])
     now = datetime.now()
     end_time = now.strftime("%D-%H:%M:%S")
     print("Start Time =", start_time)
@@ -783,7 +786,9 @@ if __name__ == "__main__":
     now = datetime.now()
     start_time = now.strftime("%D-%H:%M:%S")
     opt_out_2 = optimize_1d(z_n_dict["Z_1"], z_n_dict["N_1"], r2_het_hist, nbin_het_hist,
-                           z_n_dict_global["Z_1"], z_n_dict_global["N_1"], r2_het_hist_global)
+                           z_n_dict_global["Z_1"], z_n_dict_global["N_1"], r2_het_hist_global,
+                            maxiter_1d_glob=config["optimization"]["maxiter_1d_glob"],
+                            maxiter_1d_loc=config["optimization"]["maxiter_1d_loc"])
     now = datetime.now()
     end_time = now.strftime("%D-%H:%M:%S")
     print("Start Time =", start_time)
@@ -795,7 +800,9 @@ if __name__ == "__main__":
     now = datetime.now()
     start_time = now.strftime("%D-%H:%M:%S")
     opt_out_3 = optimize_1d(z_n_dict["Z_2"], z_n_dict["N_2"], r2_het_hist, nbin_het_hist,
-                           z_n_dict_global["Z_2"], z_n_dict_global["N_2"], r2_het_hist_global)
+                            z_n_dict_global["Z_2"], z_n_dict_global["N_2"], r2_het_hist_global,
+                            maxiter_1d_glob=config["optimization"]["maxiter_1d_glob"],
+                            maxiter_1d_loc=config["optimization"]["maxiter_1d_loc"])
     now = datetime.now()
     end_time = now.strftime("%D-%H:%M:%S")
     print("Start Time =", start_time)
@@ -812,7 +819,9 @@ if __name__ == "__main__":
                              z_n_dict["N_1"], z_n_dict["Z_1"],
                              r2_het_hist, nbin_het_hist,
                              z_n_dict_global["Z_0"], z_n_dict_global["N_0"],
-                             z_n_dict_global["Z_1"], z_n_dict_global["N_1"], r2_het_hist_global)
+                             z_n_dict_global["Z_1"], z_n_dict_global["N_1"], r2_het_hist_global,
+                             maxiter_2d_glob=config["optimization"]["maxiter_2d_glob"],
+                             maxiter_2d_loc=config["optimization"]["maxiter_2d_loc"])
     now = datetime.now()
     end_time = now.strftime("%D-%H:%M:%S")
     print("Start Time =", start_time)
@@ -829,7 +838,9 @@ if __name__ == "__main__":
                              z_n_dict["N_2"], z_n_dict["Z_2"],
                              r2_het_hist, nbin_het_hist,
                              z_n_dict_global["Z_0"], z_n_dict_global["N_0"],
-                             z_n_dict_global["Z_2"], z_n_dict_global["N_2"], r2_het_hist_global)
+                             z_n_dict_global["Z_2"], z_n_dict_global["N_2"], r2_het_hist_global,
+                             maxiter_2d_glob=config["optimization"]["maxiter_2d_glob"],
+                             maxiter_2d_loc=config["optimization"]["maxiter_2d_loc"])
     now = datetime.now()
     end_time = now.strftime("%D-%H:%M:%S")
     print("Start Time =", start_time)
@@ -846,7 +857,9 @@ if __name__ == "__main__":
                              z_n_dict["N_2"], z_n_dict["Z_2"],
                              r2_het_hist, nbin_het_hist,
                              z_n_dict_global["Z_1"], z_n_dict_global["N_1"],
-                             z_n_dict_global["Z_2"], z_n_dict_global["N_2"], r2_het_hist_global)
+                             z_n_dict_global["Z_2"], z_n_dict_global["N_2"], r2_het_hist_global,
+                             maxiter_2d_glob=config["optimization"]["maxiter_2d_glob"],
+                             maxiter_2d_loc=config["optimization"]["maxiter_2d_loc"])
     now = datetime.now()
     end_time = now.strftime("%D-%H:%M:%S")
     print("Start Time =", start_time)
@@ -867,12 +880,19 @@ if __name__ == "__main__":
                               z_n_dict["N_0"], z_n_dict["N_1"], z_n_dict["N_2"],
                               p_1, p_2, p_3, sb2_1, sb2_2, sb2_3, s02_1, s02_2, s02_3,
                               p_12, p_13, p_23, rho_12, rho_13, rho_23,  rho0_12, rho0_13, rho0_23,
-                              r2_het_hist, nbin_het_hist)
+                              r2_het_hist, nbin_het_hist, config["optimization"]["maxiter_3d"])
     now = datetime.now()
     end_time = now.strftime("%D-%H:%M:%S")
     print("Start Time =", start_time)
     print("End Time =", end_time)
     print("Trivariate result 1 vs 2 vs 3:")
     print(opt_out_123)    
+
+    out_dict = dict(config=config, opt_out_1=opt_out_1, opt_out_2=opt_out_2, opt_out_3=opt_out_3,
+                    opt_out_12=opt_out_12, opt_out_13=opt_out_13, opt_out_23=opt_out_23,
+                    opt_out_123=opt_out_123)
+
+    with open(config["out"], 'w') as f:
+        json.dump(out_dict, f, indent=4)
 
     print("Done!")
